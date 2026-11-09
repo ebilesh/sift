@@ -7,6 +7,8 @@ export type FileItem = {
   folder: boolean;
   ext: string;
   relativePath?: string;
+  identity?: string;
+  missing?: boolean;
 };
 export type Category =
   | "All files"

@@ -2895,3 +2895,95 @@ button:focus-visible {
 .duplicates-page > .scope-toolbar {
   margin-bottom: 20px;
 }
+.folder-picker {
+  cursor: default;
+  gap: 10px;
+}
+.folder-picker > span {
+  display: block;
+  min-width: 0;
+  flex: 1;
+}
+.folder-picker > span > span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  margin-bottom: 5px;
+}
+.folder-picker select {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+}
+.workspace-start {
+  padding: 40px;
+  color: var(--secondary);
+}
+.missing-label {
+  display: block;
+  color: var(--secondary);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.content-search {
+  margin: 14px 0;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 14px;
+  font-size: 12px;
+  color: var(--secondary);
+}
+.content-search summary {
+  cursor: pointer;
+  padding: 5px 0;
+  list-style-position: inside;
+}
+.content-search form {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 12px 0;
+}
+.content-search input {
+  min-width: 150px;
+  flex: 1;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 9px;
+  color: var(--text);
+}
+.content-search > p {
+  margin-top: 9px;
+  line-height: 1.6;
+}
+.content-snippet {
+  white-space: normal;
+  max-width: 60ch;
+  line-height: 1.5;
+}
+.file-name small {
+  max-width: 100%;
+  white-space: nowrap;
+}
+.content-search summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+@media (max-width: 600px) {
+  .content-search input {
+    flex-basis: 100%;
+    font-size: 16px;
+  }
+  .content-search .button {
+    flex: 1;
+  }
+  .folder-picker select {
+    font-size: 16px;
+  }
+}

@@ -1,4 +1,6 @@
 import http from "node:http";
+import { searchContents } from "./content-search.mjs";
+import { availableRoots } from "./roots.mjs";
 import { lstat, open } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
@@ -56,7 +58,14 @@ const types = {
   webm: "video/webm",
   mov: "video/quicktime",
 };
-export function createHandler(root = defaultRoot, staticDirectory = null) {
+export function createHandler(
+  defaultDirectory = defaultRoot,
+  staticDirectory = null,
+  options = {},
+) {
+  let choices;
+  const getRoots = () =>
+    (choices ||= availableRoots(defaultDirectory, options.home));
   let scanning = false;
   return async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
@@ -86,6 +95,42 @@ export function createHandler(root = defaultRoot, staticDirectory = null) {
         res.setHeader("Content-Type", "application/json");
         res.end(JSON.stringify(data));
       };
+      if (url.pathname === "/api/roots")
+        return json({
+          roots: (await getRoots()).map(({ id, name }) => ({ id, name })),
+        });
+      let root = defaultDirectory;
+      const rootId = url.searchParams.get("root");
+      if (rootId && rootId !== "default") {
+        const choice = (await getRoots()).find(
+          (choice) => choice.id === rootId,
+        );
+        if (!choice) {
+          res.writeHead(400);
+          return json({ error: "Unknown workspace folder" });
+        }
+        root = choice.path;
+      }
+      if (url.pathname === "/api/search-content") {
+        const query = url.searchParams.get("q") || "";
+        if (!query.trim() || query.length > 200) {
+          res.writeHead(400);
+          return json({ error: "Search text must be 1–200 characters" });
+        }
+        const controller = new AbortController();
+        res.on("close", () => {
+          if (!res.writableFinished) controller.abort();
+        });
+        return json(
+          await searchContents(
+            root,
+            decode(url.searchParams.get("dir") || ""),
+            url.searchParams.get("recursive") === "1",
+            query,
+            { signal: controller.signal },
+          ),
+        );
+      }
       if (url.pathname === "/api/files") {
         const relative = decode(url.searchParams.get("dir") || "");
         const recursive = url.searchParams.get("recursive") === "1";

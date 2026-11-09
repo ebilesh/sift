@@ -47,6 +47,11 @@ import {
   Loader2,
 } from "lucide-react";
 import StorageChart from "./StorageChart";
+import { icons, IconButton, FileIcon, Modal } from "./components";
+import FilePreview from "./FilePreview";
+import ContentSearch, { type ContentMatch } from "./ContentSearch";
+import WorkspaceShell, { type RootProps } from "./WorkspaceShell";
+import { reconcileIndex, remapMetadata } from "./reconcile";
 import {
   type FileItem,
   type Category,
@@ -65,97 +70,11 @@ import {
 } from "./model";
 import { useStored, saveFile, parentPath } from "./workspace";
 import "./styles.css";
-const icons: Record<string, typeof Files> = {
-  "All files": Files,
-  Documents: FileText,
-  Images: Image,
-  Video: Film,
-  Audio: Music,
-  Archives: Archive,
-  Applications: AppWindow,
-  Folders: Folder,
-  Other: Files,
-};
-function IconButton({
-  label,
-  children,
-  onClick,
-  active = false,
-  disabled = false,
-}: {
-  label: string;
-  children: React.ReactNode;
-  onClick: () => void;
-  active?: boolean;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      className={`icon-button ${active ? "active" : ""}`}
-      aria-label={label}
-      title={label}
-      onClick={onClick}
-      disabled={disabled}
-    >
-      {children}
-    </button>
+function App({ rootId, roots, onRootChange }: RootProps) {
+  const [contentRevision, setContentRevision] = useState(0);
+  const [contentMatches, setContentMatches] = useState<ContentMatch[] | null>(
+    null,
   );
-}
-function FileIcon({
-  file,
-  large = false,
-}: {
-  file: FileItem;
-  large?: boolean;
-}) {
-  const cat = category(file),
-    I = icons[cat];
-  return (
-    <span
-      className={`file-icon ${large ? "large" : ""}`}
-      style={{ "--file-color": colors[cat] } as React.CSSProperties}
-    >
-      <I size={large ? 36 : 21} strokeWidth={1.5} />
-      {large && !file.folder && <span>{file.ext.toUpperCase()}</span>}
-    </span>
-  );
-}
-function Modal({
-  children,
-  onClose,
-  label,
-  wide = false,
-}: {
-  children: React.ReactNode;
-  onClose: () => void;
-  label: string;
-  wide?: boolean;
-}) {
-  const ref = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
-    const d = ref.current;
-    d?.showModal();
-    return () => d?.close();
-  }, []);
-  return (
-    <dialog
-      ref={ref}
-      aria-label={label}
-      className={wide ? "modal wide" : "modal"}
-      onCancel={(e) => {
-        e.preventDefault();
-        onClose();
-      }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      {children}
-    </dialog>
-  );
-}
-function App() {
   const [files, setFiles] = useState<FileItem[]>([]),
     [loading, setLoading] = useState(true),
     [source, setSource] = useState("local"),
@@ -175,7 +94,7 @@ function App() {
   const [stars, setStars] = useStored<string[]>("dos-stars", []),
     [collections, setCollections] = useStored<Record<string, string[]>>(
       "dos-collections",
-      { Inspiration: [], "Work in progress": [] },
+      {},
     ),
     [collectionDialog, setCollectionDialog] = useState(false),
     [newCollection, setNewCollection] = useState("");
@@ -226,6 +145,8 @@ function App() {
     () => matchMedia("(max-width:1200px)").matches,
   );
   const inspectorRef = useRef<HTMLElement>(null);
+  const latestDetail = useRef(detail);
+  latestDetail.current = detail;
   const inspectorInvoker = useRef<{
     id: string;
     control: HTMLElement | null;
@@ -279,23 +200,40 @@ function App() {
       if (main) main.inert = false;
       if (sidebar) sidebar.inert = matchMedia("(max-width:900px)").matches;
       if (invokingControl?.isConnected) invokingControl.focus();
+      else if (latestDetail.current)
+        document
+          .querySelector<HTMLElement>(
+            `[aria-label="Details for ${CSS.escape(latestDetail.current.name)}"]`,
+          )
+          ?.focus();
     };
-  }, [detail?.id, preview]);
+  }, [!!detail, preview]);
   useEffect(() => {
     if (!detail) inspectorInvoker.current = null;
   }, [detail?.id]);
+  const [autoRefresh, setAutoRefresh] = useStored("sift-auto-refresh", true);
+  const refreshing = useRef(false);
+  const loadCurrent = useRef<(background?: boolean) => Promise<void>>(
+    async () => {},
+  );
   const notify = (s: string) => setToast(s);
-  async function load(dir = folderPath.at(-1)?.id || "", deep = recursive) {
+  async function load(
+    dir = folderPath.at(-1)?.id || "",
+    deep = recursive,
+    background = false,
+  ) {
     const version = ++requestVersion.current;
-    setLoading(true);
+    if (!background) {
+      setLoading(true);
+      setSelected(new Set());
+      setDetail(null);
+      setResultPage(0);
+      scanController.current?.abort();
+    }
     setError("");
-    setSelected(new Set());
-    setDetail(null);
-    setResultPage(0);
-    scanController.current?.abort();
     try {
       const r = await fetch(
-        `/api/files?dir=${encodeURIComponent(dir)}&recursive=${deep ? 1 : 0}`,
+        `/api/files?root=${encodeURIComponent(rootId)}&dir=${encodeURIComponent(dir)}&recursive=${deep ? 1 : 0}`,
       );
       if (!r.ok) throw Error();
       const data = await r.json();
@@ -308,12 +246,50 @@ function App() {
             ? `${data.skipped} folders could not be read.`
             : "",
       );
+      if (background && JSON.stringify(files) === JSON.stringify(data.files))
+        return;
       setFiles(data.files);
-      setKnownFiles((previous) => {
-        const index = new Map(previous.map((f) => [f.id, f]));
-        for (const f of data.files as FileItem[]) index.set(f.id, f);
-        return [...index.values()];
-      });
+      setContentRevision((value) => value + 1);
+      const reconciled = reconcileIndex(
+        knownFiles,
+        data.files,
+        data.path || "",
+        deep,
+        !data.truncated && !data.skipped,
+      );
+      setKnownFiles(reconciled.files);
+      if (Object.keys(reconciled.remapped).length) {
+        const metadata = remapMetadata(
+          stars,
+          collections,
+          annotations,
+          reconciled.remapped,
+        );
+        setStars(metadata.stars);
+        setCollections(metadata.collections);
+        setAnnotations(metadata.annotations);
+      }
+      if (background) {
+        setSelected(
+          (previous) =>
+            new Set(
+              [...previous]
+                .map((id) => reconciled.remapped[id] || id)
+                .filter((id) =>
+                  data.files.some((file: FileItem) => file.id === id),
+                ),
+            ),
+        );
+        setDetail((previous) =>
+          previous
+            ? reconciled.files.find(
+                (file) =>
+                  file.id === (reconciled.remapped[previous.id] || previous.id),
+              ) || { ...previous, missing: true }
+            : null,
+        );
+        setResultPage(0);
+      }
       if (dir) {
         const parts = String(data.path).split("/").filter(Boolean);
         setFolderPath(
@@ -335,8 +311,8 @@ function App() {
       setDuplicates([]);
     } catch {
       if (version !== requestVersion.current) return;
-      setFiles([]);
-      setSource("offline");
+      if (!background) setFiles([]);
+      if (!background) setSource("offline");
       setError(
         "Cannot connect to the local server. Start Sift locally, then retry. You can also explore the sample workspace.",
       );
@@ -351,6 +327,35 @@ function App() {
       scanController.current?.abort();
     };
   }, []);
+  loadCurrent.current = async (background = false) => {
+    await load(undefined, recursive, background);
+  };
+  useEffect(() => {
+    if (!autoRefresh || source !== "local") return;
+    async function refresh() {
+      if (
+        document.hidden ||
+        loading ||
+        refreshing.current ||
+        scanning ||
+        document.querySelector("dialog[open]")
+      )
+        return;
+      refreshing.current = true;
+      try {
+        await loadCurrent.current(true);
+      } finally {
+        refreshing.current = false;
+      }
+    }
+    const timer = setInterval(() => void refresh(), 8000);
+    const onFocus = () => void refresh();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [autoRefresh, source, scanning, loading]);
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     document.documentElement.dataset.density = density;
@@ -407,6 +412,7 @@ function App() {
       void load("");
     }
     setPage(p);
+    setContentMatches(null);
     setQuery("");
     setSize("any");
     setExtension("");
@@ -500,7 +506,11 @@ function App() {
     () =>
       sortFiles(
         searchFiles(
-          base,
+          contentMatches
+            ? base.filter((file) =>
+                contentMatches.some((match) => match.id === file.id),
+              )
+            : base,
           query,
           categories.includes(page as Category) ? page : "All files",
           size,
@@ -522,12 +532,23 @@ function App() {
       annotations,
       ascending,
       foldersFirst,
+      contentMatches,
     ],
   );
   useEffect(() => {
     setSelected(new Set());
     setResultPage(0);
-  }, [query, size, extension, age, tagFilter, page, sort, ascending]);
+  }, [
+    query,
+    size,
+    extension,
+    age,
+    tagFilter,
+    page,
+    sort,
+    ascending,
+    contentMatches,
+  ]);
   const displayed = visible.slice(resultPage * 100, (resultPage + 1) * 100);
   const title =
     page === "All files" && folderPath.length
@@ -579,6 +600,10 @@ function App() {
     notify(`Removed from ${name}. Source files are unchanged.`);
   }
   function browseFolder(f: FileItem) {
+    if (f.missing) {
+      notify("Folder unavailable. Refresh its parent folder to locate it.");
+      return;
+    }
     if (source !== "local") {
       notify("Sample folder only. Connect locally to browse folder contents.");
       return;
@@ -611,7 +636,7 @@ function App() {
         setScanFiles(demo);
       } else {
         const r = await fetch(
-          `/api/duplicates?dir=${encodeURIComponent(folderPath.at(-1)?.id || "")}&recursive=${recursive ? 1 : 0}`,
+          `/api/duplicates?root=${encodeURIComponent(rootId)}&dir=${encodeURIComponent(folderPath.at(-1)?.id || "")}&recursive=${recursive ? 1 : 0}`,
           { signal: controller.signal },
         );
         if (!r.ok) throw Error();
@@ -671,6 +696,12 @@ function App() {
   }
 
   async function openPreview(f: FileItem) {
+    if (f.missing) {
+      notify(
+        "File unavailable. Browse its folder or enable subfolders to locate it.",
+      );
+      return;
+    }
     const version = ++previewVersion.current;
     setDetail(f);
     setPreview(true);
@@ -684,7 +715,9 @@ function App() {
     }
     if (textExtensions.includes(f.ext)) {
       try {
-        const r = await fetch(`/api/preview?id=${encodeURIComponent(f.id)}`);
+        const r = await fetch(
+          `/api/preview?root=${encodeURIComponent(rootId)}&id=${encodeURIComponent(f.id)}`,
+        );
         if (!r.ok) throw Error();
         const text = await r.text();
         if (version === previewVersion.current) setTextPreview(text);
@@ -747,20 +780,23 @@ function App() {
           </span>
           <span>Sift</span>
         </a>
-        <button className="workspace" onClick={() => navigate("Settings")}>
-          <span className="avatar">
-            <Folder size={16} />
-          </span>
+        <label className="workspace folder-picker">
+          <Folder size={17} />
           <span>
-            Personal workspace
-            <small>
-              {folderPath.length
-                ? folderPath.map((f) => f.name).join(" / ")
-                : "Local folder browser"}
-            </small>
+            <span>Workspace folder</span>
+            <select
+              aria-label="Workspace folder"
+              value={rootId}
+              onChange={(event) => onRootChange(event.target.value)}
+            >
+              {roots.map((root) => (
+                <option key={root.id} value={root.id}>
+                  {root.name}
+                </option>
+              ))}
+            </select>
           </span>
-          <ChevronDown size={14} />
-        </button>
+        </label>
         <button className="sidebar-search" onClick={() => setPalette(true)}>
           <Search size={15} />
           <span>Find files</span>
@@ -884,7 +920,7 @@ function App() {
                         ? "Files you starred across visited folders."
                         : page.startsWith("collection:")
                           ? "A saved group of files. Originals stay in their folders."
-                          : `${recursive ? "Including subfolders" : "Current folder only"} · ${source === "local" ? "Local files" : source === "demo" ? "Sample files" : "Offline"}`}
+                          : `${recursive ? "Including subfolders" : "Current folder only"} · ${source === "local" ? (autoRefresh ? "Auto-refresh on" : "Local files") : source === "demo" ? "Sample files" : "Offline"}`}
               </p>
             </div>
             <div className="heading-actions">
@@ -1038,6 +1074,21 @@ function App() {
               </section>
               <section className="settings-section">
                 <h2>Browsing and backup</h2>
+                <div className="setting-row">
+                  <span>
+                    Automatic refresh
+                    <small>
+                      Check the current folder every 8 seconds and when this
+                      window regains focus.
+                    </small>
+                  </span>
+                  <input
+                    type="checkbox"
+                    aria-label="Automatic refresh"
+                    checked={autoRefresh}
+                    onChange={(event) => setAutoRefresh(event.target.checked)}
+                  />
+                </div>
                 <div className="setting-row">
                   <span>
                     Folders first
@@ -1252,6 +1303,11 @@ function App() {
                       <FileIcon file={f} />
                       <span>
                         {f.name}
+                        {f.missing && (
+                          <small className="missing-label">
+                            Unavailable · refresh its folder
+                          </small>
+                        )}
                         <small>{category(f)}</small>
                       </span>
                       <strong>{bytes(f.size)}</strong>
@@ -1390,6 +1446,11 @@ function App() {
                               }}
                             >
                               {f.name}
+                              {f.missing && (
+                                <small className="missing-label">
+                                  Unavailable · refresh its folder
+                                </small>
+                              )}
                               <small>
                                 {parentPath(f)} · {date(f.modified)}
                               </small>
@@ -1416,62 +1477,6 @@ function App() {
             </div>
           ) : (
             <>
-              {page === "All files" && !query && (
-                <section className="folder-overview">
-                  <div className="overview-label">
-                    <span className="overview-icon">
-                      <HardDrive size={21} />
-                    </span>
-                    <div>
-                      <strong>Folder contents</strong>
-                      <p>
-                        <b>{bytes(total)}</b> in files <span>·</span>{" "}
-                        {files.filter((f) => f.folder).length} folders
-                      </p>
-                    </div>
-                    <button
-                      className="text-button"
-                      onClick={() => navigate("Storage")}
-                    >
-                      Storage insights
-                      <ArrowUpRight size={14} />
-                    </button>
-                  </div>
-                  <div className="storage-bar">
-                    {stats
-                      .filter((s) => s.size)
-                      .map((s) => (
-                        <button
-                          key={s.name}
-                          style={{
-                            width: `${(s.size / total) * 100}%`,
-                            background: s.color,
-                          }}
-                          title={`${s.name}: ${bytes(s.size)}`}
-                          onClick={() => navigate(s.name)}
-                        />
-                      ))}
-                  </div>
-                  <div className="storage-legend">
-                    {stats
-                      .filter((s) => s.size)
-                      .sort((a, b) => b.size - a.size)
-                      .slice(0, 5)
-                      .map((s) => (
-                        <button key={s.name} onClick={() => navigate(s.name)}>
-                          <i style={{ background: s.color }} />
-                          {s.name}
-                          <span>{bytes(s.size)}</span>
-                        </button>
-                      ))}
-                    <span className="folder-note">
-                      {recursive
-                        ? "Including subfolders"
-                        : "Current folder only"}
-                    </span>
-                  </div>
-                </section>
-              )}
               <div className="file-toolbar">
                 <div className="file-tabs">
                   {["All files", "Documents", "Images", "Folders"].map((c) => (
@@ -1629,6 +1634,14 @@ function App() {
                   ))}
                 </div>
               )}
+              <ContentSearch
+                revision={contentRevision}
+                rootId={rootId}
+                dir={folderPath.at(-1)?.id || ""}
+                recursive={recursive}
+                enabled={source === "local"}
+                onResults={setContentMatches}
+              />
               {showFilters && (
                 <div className="filter-panel">
                   <span>
@@ -1906,8 +1919,24 @@ function App() {
                             <FileIcon file={f} />
                             <span>
                               {f.name}
+                              {f.missing && (
+                                <small className="missing-label">
+                                  Unavailable · refresh its folder
+                                </small>
+                              )}
                               {recursive && <small>{parentPath(f)}</small>}
                               {!recursive && f.folder && <small>Folder</small>}
+                              {contentMatches?.find(
+                                (match) => match.id === f.id,
+                              )?.snippet && (
+                                <small className="content-snippet">
+                                  {
+                                    contentMatches.find(
+                                      (match) => match.id === f.id,
+                                    )!.snippet
+                                  }
+                                </small>
+                              )}
                             </span>
                           </button>
                         </td>
@@ -1973,7 +2002,7 @@ function App() {
                           ) ? (
                             <img
                               loading="lazy"
-                              src={`/api/preview?id=${encodeURIComponent(f.id)}`}
+                              src={`/api/preview?root=${encodeURIComponent(rootId)}&id=${encodeURIComponent(f.id)}`}
                               alt={f.name}
                             />
                           ) : (
@@ -2062,7 +2091,7 @@ function App() {
             {source === "local" &&
             ["png", "jpg", "jpeg", "webp", "gif"].includes(detail.ext) ? (
               <img
-                src={`/api/preview?id=${encodeURIComponent(detail.id)}`}
+                src={`/api/preview?root=${encodeURIComponent(rootId)}&id=${encodeURIComponent(detail.id)}`}
                 alt={detail.name}
               />
             ) : (
@@ -2071,6 +2100,12 @@ function App() {
           </div>
           <div className="inspector-content">
             <h2>{detail.name}</h2>
+            {detail.missing && (
+              <p className="missing-label" role="status">
+                File unavailable at its last known location. Its tags and notes
+                are preserved.
+              </p>
+            )}
             <p>
               {category(detail)}
               <span>·</span>
@@ -2127,10 +2162,10 @@ function App() {
                 </div>
               ))}
             </dl>
-            {source === "local" && !detail.folder && (
+            {source === "local" && !detail.folder && !detail.missing && (
               <a
                 className="button download-link"
-                href={`/api/download?id=${encodeURIComponent(detail.id)}`}
+                href={`/api/download?root=${encodeURIComponent(rootId)}&id=${encodeURIComponent(detail.id)}`}
                 download={detail.name}
               >
                 <Download size={14} />
@@ -2557,115 +2592,14 @@ function App() {
         </Modal>
       )}
       {preview && detail && (
-        <Modal
-          label={`Preview ${detail.name}`}
+        <FilePreview
+          detail={detail}
+          rootId={rootId}
+          previewError={previewError}
+          textPreview={textPreview}
           onClose={() => setPreview(false)}
-          wide
-        >
-          <div className="modal-header">
-            <div>
-              <h2>{detail.name}</h2>
-              <p>
-                {bytes(detail.size)} · Read-only preview
-                {textExtensions.includes(detail.ext) && " · First 64 KB"}
-              </p>
-            </div>
-            <IconButton label="Close preview" onClick={() => setPreview(false)}>
-              <X size={19} />
-            </IconButton>
-          </div>
-          <div className="preview-body">
-            {previewError ? (
-              <div className="empty-state">
-                <AlertCircle size={26} />
-                <h3>Preview unavailable</h3>
-                <p>{previewError}</p>
-              </div>
-            ) : ["png", "jpg", "jpeg", "webp", "gif"].includes(detail.ext) ? (
-              <img
-                src={`/api/preview?id=${encodeURIComponent(detail.id)}`}
-                alt={detail.name}
-                onError={() =>
-                  setPreviewError(
-                    "This image could not be loaded. It may have moved or changed.",
-                  )
-                }
-              />
-            ) : detail.ext === "pdf" ? (
-              <div className="pdf-preview">
-                <p className="pdf-help">
-                  If the PDF viewer is blank,{" "}
-                  <a
-                    href={`/api/preview?id=${encodeURIComponent(detail.id)}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    open the PDF in a new tab
-                  </a>{" "}
-                  or{" "}
-                  <a
-                    href={`/api/preview?id=${encodeURIComponent(detail.id)}`}
-                    download={detail.name}
-                  >
-                    download a copy
-                  </a>
-                  .
-                </p>
-                {navigator.pdfViewerEnabled ? (
-                  <iframe
-                    title={detail.name}
-                    src={`/api/preview?id=${encodeURIComponent(detail.id)}`}
-                  />
-                ) : (
-                  <div className="empty-state">
-                    <FileText size={28} />
-                    <h3>PDF viewer unavailable</h3>
-                    <p>
-                      This browser does not support embedded PDF previews. Use
-                      the links above to view a copy.
-                    </p>
-                  </div>
-                )}
-              </div>
-            ) : ["mp3", "wav", "flac", "m4a", "ogg"].includes(detail.ext) ? (
-              <audio
-                controls
-                src={`/api/preview?id=${encodeURIComponent(detail.id)}`}
-                onError={() =>
-                  setPreviewError(
-                    "Your browser cannot play this audio format. Download a copy to open it locally.",
-                  )
-                }
-              />
-            ) : ["mp4", "webm", "mov"].includes(detail.ext) ? (
-              <video
-                controls
-                src={`/api/preview?id=${encodeURIComponent(detail.id)}`}
-                onError={() =>
-                  setPreviewError(
-                    "Your browser cannot play this video format. Download a copy to open it locally.",
-                  )
-                }
-              />
-            ) : textExtensions.includes(detail.ext) ? (
-              <pre>
-                {textPreview === null
-                  ? "Loading preview…"
-                  : textPreview || "This file is empty."}
-              </pre>
-            ) : (
-              <div className="empty-state">
-                <FileIcon file={detail} large />
-                <h3>No preview for this format</h3>
-                <p>
-                  The metadata panel has the file’s details.
-                  <br />
-                  Open the file in its native application to view its content.
-                </p>
-              </div>
-            )}
-          </div>
-        </Modal>
+          onError={setPreviewError}
+        />
       )}
       {toast && (
         <div className="toast" role="status">
@@ -2684,6 +2618,6 @@ function App() {
 }
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <App />
+    <WorkspaceShell>{(props) => <App {...props} />}</WorkspaceShell>
   </React.StrictMode>,
 );

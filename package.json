@@ -9,8 +9,8 @@
     "preview": "vite preview --host 127.0.0.1",
     "api": "node server.mjs",
     "test": "node --experimental-strip-types --test tests/*.test.mjs",
-    "format": "prettier --write src server.mjs workspace.mjs tests dev.mjs vite.config.ts",
-    "format:check": "prettier --check src server.mjs workspace.mjs tests dev.mjs vite.config.ts",
+    "format": "prettier --write src server.mjs workspace.mjs roots.mjs content-search.mjs tests dev.mjs vite.config.ts",
+    "format:check": "prettier --check src server.mjs workspace.mjs roots.mjs content-search.mjs tests dev.mjs vite.config.ts",
     "start": "node server.mjs --production"
   },
   "dependencies": {

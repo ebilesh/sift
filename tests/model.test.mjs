@@ -108,3 +108,72 @@ test("backup validation rejects malformed data before restoring", () => {
   ])
     assert.throws(() => parseBackup(JSON.stringify(bad)));
 });
+
+import { reconcileIndex, remapMetadata } from "../src/reconcile.ts";
+const tracked = {
+  ...nested,
+  id: "old",
+  identity: "1:2:3",
+  relativePath: "school/old.txt",
+};
+test("rename reconciliation preserves stars, collections, tags and notes by file identity", () => {
+  const moved = {
+    ...tracked,
+    id: "new",
+    relativePath: "school/new.txt",
+    name: "new.txt",
+  };
+  const result = reconcileIndex([tracked], [moved], "school", false, true);
+  assert.deepEqual(result.remapped, { old: "new" });
+  assert.equal(result.files.length, 1);
+  const metadata = remapMetadata(
+    ["old"],
+    { Class: ["old"] },
+    { old: { tags: ["school"], note: "Keep" } },
+    result.remapped,
+  );
+  assert.deepEqual(metadata, {
+    stars: ["new"],
+    collections: { Class: ["new"] },
+    annotations: { new: { tags: ["school"], note: "Keep" } },
+  });
+});
+test("missing entries retain notes, partial scans do not invalidate, and unrelated scopes stay intact", () => {
+  assert.equal(
+    reconcileIndex([tracked], [], "school", false, true).files[0].missing,
+    true,
+  );
+  assert.notEqual(
+    reconcileIndex([tracked], [], "school", false, false).files[0].missing,
+    true,
+  );
+  assert.notEqual(
+    reconcileIndex([tracked], [], "other", false, true).files[0].missing,
+    true,
+  );
+});
+test("replacement at the same path does not inherit old metadata; ambiguous hard links are not guessed", () => {
+  const replacement = { ...tracked, identity: "1:9:7" };
+  const result = reconcileIndex(
+    [tracked],
+    [replacement],
+    "school",
+    false,
+    true,
+  );
+  assert.equal(result.files.length, 2);
+  assert.notEqual(result.remapped.old, "old");
+  assert.equal(
+    result.files.find((file) => file.id === result.remapped.old).missing,
+    true,
+  );
+  const hardLink = { ...tracked, id: "link", relativePath: "school/link.txt" };
+  const ambiguous = reconcileIndex(
+    [tracked, hardLink],
+    [{ ...tracked, id: "new" }],
+    "school",
+    false,
+    true,
+  );
+  assert.deepEqual(ambiguous.remapped, {});
+});

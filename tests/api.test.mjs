@@ -213,3 +213,99 @@ test("production mode serves built assets while confining paths and retaining re
     await rm(root, { recursive: true, force: true });
   }
 });
+
+import { availableRoots } from "../roots.mjs";
+import { searchContents } from "../content-search.mjs";
+import { rename } from "node:fs/promises";
+test("root picker allows visible home folders and isolates API file scopes", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "sift-roots-"));
+  try {
+    await mkdir(path.join(home, "Downloads"));
+    await mkdir(path.join(home, "Documents"));
+    await mkdir(path.join(home, ".private"));
+    await symlink("/tmp", path.join(home, "outside"));
+    await writeFile(
+      path.join(home, "Documents", "class.txt"),
+      "document content",
+    );
+    const choices = await availableRoots(path.join(home, "Downloads"), home);
+    assert.deepEqual(
+      choices.map((root) => root.name),
+      ["Downloads", "Documents"],
+    );
+    const handler = createHandler(path.join(home, "Downloads"), null, { home });
+    const roots = JSON.parse((await request(handler, "/api/roots")).body).roots;
+    assert.ok(roots.every((root) => !Object.hasOwn(root, "path")));
+    const documentRoot = roots.find((root) => root.name === "Documents");
+    assert.equal(
+      JSON.parse(
+        (await request(handler, "/api/files?root=" + documentRoot.id)).body,
+      ).files[0].name,
+      "class.txt",
+    );
+    assert.equal(
+      JSON.parse((await request(handler, "/api/files")).body).files.length,
+      0,
+    );
+    assert.equal(
+      (await request(handler, "/api/files?root=../../etc")).status,
+      400,
+    );
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+test("filesystem identity survives rename and changes for a new file at the old path", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sift-identity-"));
+  try {
+    await writeFile(path.join(root, "old.txt"), "old");
+    const before = (await listFiles(root))[0];
+    await rename(path.join(root, "old.txt"), path.join(root, "new.txt"));
+    const renamed = (await listFiles(root))[0];
+    assert.equal(renamed.identity, before.identity);
+    assert.notEqual(renamed.id, before.id);
+    await writeFile(path.join(root, "old.txt"), "replacement");
+    const replacement = (await listFiles(root)).find(
+      (file) => file.name === "old.txt",
+    );
+    assert.notEqual(replacement.identity, before.identity);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+test("content search checks text safely with scope and explicit limits", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "sift-content-"));
+  try {
+    await mkdir(path.join(root, "nested"));
+    await writeFile(
+      path.join(root, "a.md"),
+      "Meeting about partial derivatives",
+    );
+    await writeFile(
+      path.join(root, "nested", "b.ts"),
+      "// PARTIAL derivatives",
+    );
+    await writeFile(path.join(root, "no.pdf"), "partial");
+    await writeFile(
+      path.join(root, "large.txt"),
+      "x".repeat(70000) + "partial",
+    );
+    const flat = await searchContents(root, "", false, "partial");
+    assert.equal(flat.matches.length, 1);
+    assert.equal(flat.partial, true);
+    const recursive = await searchContents(root, "", true, "partial");
+    assert.equal(recursive.matches.length, 2);
+    assert.ok(recursive.matches[0].snippet);
+    const limited = await searchContents(root, "", true, "partial", {
+      maxFiles: 1,
+    });
+    assert.equal(limited.inspected, 1);
+    assert.equal(limited.partial, true);
+    assert.equal(
+      (await request(createHandler(root), "/api/search-content?q=")).status,
+      400,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

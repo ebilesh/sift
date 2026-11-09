@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
+export const StorageScope = createContext("");
 export function read<T>(key: string, fallback: T): T {
   try {
     return JSON.parse(localStorage.getItem(key) || "null") ?? fallback;
@@ -7,6 +8,8 @@ export function read<T>(key: string, fallback: T): T {
   }
 }
 export function useStored<T>(key: string, initial: T) {
+  const scope = useContext(StorageScope);
+  key = scope ? `sift-root:${scope}:${key}` : key;
   const [value, setValue] = useState<T>(() => read(key, initial));
   useEffect(() => {
     try {

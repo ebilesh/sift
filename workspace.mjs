@@ -42,6 +42,7 @@ export async function listFiles(root, relative = "") {
           return {
             id: Buffer.from(relativePath).toString("base64url"),
             name: entry.name,
+            identity: `${stat.dev}:${stat.ino}:${stat.birthtimeMs}`,
             relativePath,
             size: stat.size,
             modified: stat.mtime.toISOString(),
