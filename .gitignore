@@ -3,3 +3,5 @@ dist/
 *.tsbuildinfo
 .impeccable/config.local.json
 .impeccable/questions/
+work/
+.impeccable/review/*.png

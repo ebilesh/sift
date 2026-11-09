@@ -1,55 +1,93 @@
 # Sift
 
-[GitHub repository](https://github.com/ebilesh/sift)
+Browse a local folder, find files across subfolders, and group related files without moving them.
 
-Find your files. Keep your focus.
+Sift runs on your computer. A Node server reads a folder you choose; a React interface handles search, previews, collections, tags, and notes. File comparison uses SHA-256. There are no model APIs, accounts, or uploads.
 
-A local-first, read-only file workspace built with React, TypeScript, Tailwind CSS, Lucide and Recharts.
+![Sift browsing a local fixture folder](docs/workspace.png)
 
-## Run locally
+## Run
 
 Requires Node.js 22.6 or newer and npm.
 
 ```bash
-cd ~/Downloads/downloads-os
-npm install
+git clone https://github.com/ebilesh/sift.git
+cd sift
+npm ci
 npm run dev
 ```
 
-Open **http://127.0.0.1:5173**. The read-only API listens on port 4318 and Vite proxies `/api` requests to it. Both bind only to the loopback interface.
-
-To use another directory:
+Open **http://127.0.0.1:5173**. The default folder is your Downloads directory. Use **Workspace folder** in the sidebar to switch to another visible folder directly inside your home directory without restarting. Each selectable folder has separate stars, collections, tags, notes, preferences, and a visited-file index. To start with a folder elsewhere on macOS or Linux:
 
 ```bash
 DOWNLOADS_DIR="/absolute/path/to/folder" npm run dev
 ```
 
-`npm run build` type-checks and creates `dist/`. For a production-build preview, run `npm run api` in one terminal and `npm run preview` in another. Vite preview proxies `/api` to the same local API.
+In PowerShell:
 
-## Features
+```powershell
+$env:DOWNLOADS_DIR = "C:\Users\you\Documents"
+npm run dev
+```
 
-- Grid and list explorer, nested folder browsing, smart categories, recent and starred files.
-- Name search combined with category and size filters; sorting by name, size or modification time.
-- Metadata inspector, image/PDF previews and text previews (first 64 KB).
-- Storage composition, interactive category bar chart, largest-file explorer.
-- Exact duplicate detection using streaming SHA-256 hashes.
-- Multi-select, select-all, and app-local collections with membership removal; theme, view and density preferences.
-- Command palette (`Ctrl/⌘ K`), search shortcut (`/`), select-all (`Ctrl/⌘ A`), Escape dismissal.
-- Labeled demo fallback when the local API is unavailable.
+To run the built app without the development server:
 
-## File safety and scope
+```bash
+npm run build
+npm start
+```
 
-The API accepts GET only. It does not provide move, rename, overwrite or delete operations. Collections and stars save file identifiers in browser localStorage; source files remain untouched. Nothing is uploaded. Hidden files, symlinks and the `downloads-os` project folder are excluded. Resolved preview and folder paths are confined to the configured Downloads root. Requests with non-local Host headers are rejected.
+Open **http://127.0.0.1:4318**. Set `DOWNLOADS_DIR` the same way when starting the production app. Keep the server bound to localhost; it reads your files and is intended for one person on one computer.
 
-Explorer data, analytics and duplicate scans cover the currently open directory; folder contents are browsable but are not recursively included in totals. Duplicate scans can take time for large files. PDFs depend on the browser's PDF viewer; open-in-new-tab and download-copy links remain available when the embedded viewer is blank. Unrecognized formats show metadata rather than execute native files. Starred files and collections use a browser-local metadata index of previously visited directories. Collections do not move files, and external file renames may leave old collection entries.
+If the API is unavailable, Sift shows a connection error with a retry button. **Explore sample files** opens an explicitly labeled sample workspace. Sample entries do not have real previews.
 
-## Validation
+## Find files
+
+Turn on **Include subfolders** to search the current directory tree. Results show each file's parent folder. The list and grid display 100 results per page; export and select-all apply to every matching result.
+
+Search supports ordinary words, quoted phrases, and operators. Terms combine with AND:
+
+| Search | Matches |
+| --- | --- |
+| `"project notes"` | Names containing that phrase |
+| `ext:pdf` | PDF files |
+| `type:image` | Images |
+| `larger:10mb smaller:1gb` | Files between those sizes |
+| `in:school ext:ts` | TypeScript files with “school” in their relative path |
+
+**Search inside text and code files** searches plain-text formats and shows matching excerpts. It reads the first 64,000 bytes per file, at most 2,000 candidates and 32 MB total, and reports partial results. It does not extract PDF or Word text. An active content search reruns when a refresh detects folder changes. Each new result set returns to page one. The main search field covers filenames and paths. Advanced filters combine extension, modified date, size, and tags. Searches can be saved and removed. Sorting supports name, modification time, and size in either direction, with a folders-first preference.
+
+## Inspect and organize
+
+- Preview images, PDFs, text, and source code. Text previews show the first 64,000 bytes and never execute code or HTML.
+- Play supported audio/video in the browser, including seeking. Codec support depends on your browser. Unsupported files still have metadata and a download-copy link.
+- Star files, attach tags and notes, and group selections into collections. Rename or remove collections from **Manage collection**.
+- Use **Storage** to inspect category sizes and the largest files in the current scope. Category bars also work with keyboard navigation.
+- Use **Duplicates** to compare equal-size candidates with streaming SHA-256 hashes. Review duplicate groups and the bytes in extra copies. Scans can be cancelled, and changed or unreadable files are skipped.
+- Export the current results or selected files as CSV. Export and restore workspace metadata as JSON in Settings; restore asks before merging.
+
+Shortcuts: **Ctrl/⌘ K** opens the command palette, **/** focuses search, **Ctrl/⌘ A** selects matching files, and **Escape** closes panels or clears selection.
+
+## Storage and limits
+
+Source files are read-only: Sift has no move, rename, overwrite, or delete endpoint. Downloading a copy does not alter the original. Collections, stars, tags, notes, preferences, and the visited-file index live in browser localStorage. Export backups before clearing browser data. Backups contain relative file identifiers and your notes, not file contents.
+
+Stars and collections resolve against files in previously visited folders. After restoring a backup, browse its folders or enable recursive indexing so those files enter the index. On a complete refresh, Sift matches filesystem device/inode/birth-time identity to preserve metadata across observed renames and moves within a workspace. Ambiguous hard links are not guessed. Missing files remain marked unavailable so their notes can be recovered; a new file at the old path does not inherit the old notes. These identifiers are filesystem-dependent and cannot track copies or moves across filesystems. Metadata is isolated by selectable workspace root. Existing default-folder storage is preserved.
+
+Recursive traversal stops at 20,000 entries or 24 directory levels and reports partial results. Hidden entries and symbolic links are excluded from directory listings. Folder size metadata is excluded from storage totals. Scans read candidate content sequentially and can take time on large folders; Sift checks the current scope every eight seconds while the tab is visible and when the window regains focus. Turn **Automatic refresh** off in Settings to refresh manually. It polls directory metadata rather than installing an OS watcher, and pauses during duplicate scans and open dialogs. It does not maintain a persistent disk index.
+
+The API rejects non-local Host headers and foreign browser origins, confines resolved paths to the configured root, and serves source previews with a sandbox policy and `nosniff`. This is a local utility, not a multi-user service. PDF previews require a browser PDF viewer; fallback links remain available.
+
+## Development
 
 ```bash
 npm test
 npm run build
+npm run format:check
 ```
 
-The API and model tests run without installing dependencies using Node's TypeScript type stripping. They cover read-only routing, filtering, nested browsing, real content hashing, preview response safety and path confinement.
+`workspace.mjs` owns traversal, path checks, and content hashing. `roots.mjs` limits selectable workspace roots; `content-search.mjs` performs bounded text reads. `server.mjs` owns HTTP responses, byte ranges, previews, downloads, and optional built-app serving. `src/model.ts` owns search, sorting, CSV encoding, and backup validation. `src/workspace.ts` owns browser persistence and exports; `src/StorageChart.tsx` renders category bars without a chart dependency. `src/WorkspaceShell.tsx` handles folder selection and storage isolation, `src/reconcile.ts` updates metadata across observed filesystem changes, and `src/ContentSearch.tsx` handles content-search requests and cancellation. Shared controls and previews live in `src/components.tsx` and `src/FilePreview.tsx`. `src/main.tsx` composes the remaining views and interactions.
 
-The production build (`npm run build`) and API/model tests (`npm test`) pass. Browser inspection covered desktop (1440px), phone (390px), search/filtering, grid/list, previews, collection persistence/removal, command palette dismissal, mobile drawer focus restoration, chart pointer/keyboard navigation and duplicate scanning. Embedded PDF rendering was blank in the inspection browser; fallback links are provided. Cross-platform testing and OS-level reduced-motion emulation remain unverified. Chart animation is disabled for all users. The production build currently emits a bundle-size advisory for the chart-heavy main chunk. See `.impeccable/review/review.md` for the source review and historical environment limits.
+Tests use temporary folders to check recursive indexing, exact duplicates, hidden-file and symlink exclusion, path confinement, read-only routes, media ranges, downloads, preview limits, search composition, sorting, CSV escaping, and malformed backups. CI runs tests, formatting, and the production build on Node 22.
+
+See [architecture and tradeoffs](docs/architecture.md) for the traversal, hashing, preview, and metadata decisions.
